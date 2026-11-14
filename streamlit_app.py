@@ -14,6 +14,14 @@ USERNAME = "giocarr"
 API_ROOT = "https://api.chess.com/pub/player"
 HEADERS = {"User-Agent": "ChessPerformanceDashboard/1.0 (personal analysis)"}
 
+
+def find_stockfish():
+    candidates = [shutil.which("stockfish"), "/usr/games/stockfish", "/usr/bin/stockfish", "/usr/local/bin/stockfish"]
+    for candidate in candidates:
+        if candidate and __import__("os").path.isfile(candidate) and __import__("os").access(candidate, __import__("os").X_OK):
+            return candidate
+    return None
+
 st.set_page_config(page_title="Chess Performance Dashboard", page_icon="♟️", layout="wide")
 
 @st.cache_data(ttl=21600, show_spinner=False)
@@ -174,7 +182,7 @@ with tab_games:
 
 @st.cache_data(ttl=604800, show_spinner=False)
 def analyze_loss(pgn_text, user_color, depth):
-    path = shutil.which("stockfish")
+    path = find_stockfish()
     if not path:
         raise RuntimeError("Stockfish non trovato: controlla packages.txt.")
     game = chess.pgn.read_game(io.StringIO(pgn_text))
@@ -212,7 +220,7 @@ def analyze_loss(pgn_text, user_color, depth):
 with tab_engine:
     st.subheader("Analisi delle sconfitte con Stockfish")
     st.write("Il motore confronta la posizione prima e dopo ciascuna tua mossa e stima la perdita in centipawn.")
-    if not shutil.which("stockfish"):
+    if not find_stockfish():
         st.error("Stockfish non installato: verifica packages.txt.")
     else:
         lost = view[view["result"] == "Sconfitta"].dropna(subset=["pgn"]).sort_values("date", ascending=False)
