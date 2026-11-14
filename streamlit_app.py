@@ -5,6 +5,10 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
+import io, shutil
+import chess
+import chess.pgn
+import chess.engine
 
 USERNAME = "giocarr"
 API_ROOT = "https://api.chess.com/pub/player"
@@ -122,7 +126,7 @@ c3.metric("Patte", f"{draws:,}".replace(",", "."))
 c4.metric("Sconfitte", f"{losses:,}".replace(",", "."))
 c5.metric("Punteggio", f"{score_pct:.1f}%")
 
-tab_overview, tab_color, tab_openings, tab_games = st.tabs(["Panoramica", "Bianco e Nero", "Aperture", "Partite"])
+tab_overview, tab_color, tab_openings, tab_games, tab_engine = st.tabs(["Panoramica", "Bianco e Nero", "Aperture", "Partite", "Analisi Stockfish"])
 
 with tab_overview:
     left, right = st.columns(2)
@@ -166,6 +170,91 @@ with tab_games:
     st.dataframe(listing[["date","color","result","rating","opponent","opponent_rating","opening","accuracy","url"]].rename(columns={
         "date":"Data","color":"Colore","result":"Esito","rating":"Tuo Elo","opponent":"Avversario","opponent_rating":"Elo avversario","opening":"Apertura","accuracy":"Precisione","url":"Partita"
     }), hide_index=True, use_container_width=True, column_config={"Partita":st.column_config.LinkColumn("Partita")})
+
+
+@st.cache_data(ttl=604800, show_spinner=False)
+def analyze_loss(pgn_text, user_color, depth):
+    path = shutil.which("stockfish")
+    if not path:
+        raise RuntimeError("Stockfish non trovato: controlla packages.txt.")
+    game = chess.pgn.read_game(io.StringIO(pgn_text))
+    if game is None:
+        raise ValueError("PGN non leggibile.")
+    board = game.board()
+    white_user = user_color == "Bianco"
+    found = []
+    engine = chess.engine.SimpleEngine.popen_uci(path)
+    try:
+        engine.configure({"Threads": 1, "Hash": 128})
+        for move in game.mainline_moves():
+            is_white = board.turn == chess.WHITE
+            if is_white == white_user:
+                san = board.san(move)
+                number = board.fullmove_number
+                before = engine.analyse(board, chess.engine.Limit(depth=depth))
+                score_before = before["score"].pov(board.turn).score(mate_score=10000)
+                board.push(move)
+                after = engine.analyse(board, chess.engine.Limit(depth=depth))
+                pov = chess.WHITE if white_user else chess.BLACK
+                score_after = after["score"].pov(pov).score(mate_score=10000)
+                loss = max(0, score_before - score_after)
+                if loss >= 50:
+                    kind = "Blunder" if loss >= 250 else ("Errore" if loss >= 100 else "Imprecisione")
+                    phase = "Apertura" if number <= 12 else ("Finale" if len(board.piece_map()) <= 12 else "Mediogioco")
+                    found.append({"Mossa": str(number) + ("." if white_user else "...") + " " + san,
+                                  "Perdita (cp)": int(loss), "Tipo": kind, "Fase": phase})
+            else:
+                board.push(move)
+    finally:
+        engine.quit()
+    return found
+
+with tab_engine:
+    st.subheader("Analisi delle sconfitte con Stockfish")
+    st.write("Il motore confronta la posizione prima e dopo ciascuna tua mossa e stima la perdita in centipawn.")
+    if not shutil.which("stockfish"):
+        st.error("Stockfish non installato: verifica packages.txt.")
+    else:
+        lost = view[view["result"] == "Sconfitta"].dropna(subset=["pgn"]).sort_values("date", ascending=False)
+        if len(lost) == 0:
+            st.info("Nessuna sconfitta con PGN nel periodo selezionato.")
+        else:
+            count = st.slider("Sconfitte recenti da analizzare", 1, min(20, len(lost)), min(5, len(lost)))
+            depth = st.slider("Profondità Stockfish", 8, 16, 10)
+            selected = lost.head(count)
+            if st.button("Analizza con Stockfish", type="primary"):
+                errors, failures = [], []
+                progress = st.progress(0)
+                for i, (_, row) in enumerate(selected.iterrows()):
+                    try:
+                        for item in analyze_loss(row["pgn"], row["color"], depth):
+                            item.update({"Data": row["date"].strftime("%d/%m/%Y"), "Colore": row["color"],
+                                         "Avversario": row["opponent"], "Partita": row["url"]})
+                            errors.append(item)
+                    except Exception as exc:
+                        failures.append(str(exc))
+                    progress.progress((i + 1) / len(selected))
+                st.session_state["sf_errors"] = pd.DataFrame(errors)
+                st.session_state["sf_failures"] = failures
+            result = st.session_state.get("sf_errors")
+            if result is not None:
+                if not result.empty:
+                    a, b, c = st.columns(3)
+                    a.metric("Errori rilevati", len(result))
+                    b.metric("Blunder", int((result["Tipo"] == "Blunder").sum()))
+                    c.metric("Perdita media", str(round(result["Perdita (cp)"].mean())) + " cp")
+                    st.plotly_chart(px.bar(result.groupby(["Fase", "Tipo"]).size().reset_index(name="Numero"),
+                                           x="Fase", y="Numero", color="Tipo", barmode="group"),
+                                    use_container_width=True)
+                    st.dataframe(result.sort_values("Perdita (cp)", ascending=False),
+                                 hide_index=True, use_container_width=True,
+                                 column_config={"Partita": st.column_config.LinkColumn("Partita")})
+                    st.caption("Soglie indicative: imprecisione 50–99 cp, errore 100–249 cp, blunder da 250 cp. La diagnosi tattica/strategica verrà aggiunta dopo aver validato i risultati.")
+                else:
+                    st.success("Nessun errore da 50 cp o superiore nelle partite analizzate.")
+                for message in st.session_state.get("sf_failures", []):
+                    st.warning(message)
+
 
 st.divider()
 st.caption("Prima versione: statistiche descrittive ricavate dai dati pubblici. L'analisi delle mosse con Stockfish, la classificazione degli errori e i suggerimenti didattici saranno aggiunti in una fase successiva.")
