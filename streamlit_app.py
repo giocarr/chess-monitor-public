@@ -257,4 +257,4 @@ with tab_engine:
 
 
 st.divider()
-st.caption("Prima versione: statistiche descrittive ricavate dai dati pubblici. L'analisi delle mosse con Stockfish, la classificazione degli errori e i suggerimenti didattici saranno aggiunti in una fase successiva.")
+st.caption("Analisi Stockfish disponibile sulle sconfitte Rapid selezionate. Le categorie tattiche e strategiche saranno approfondite nelle prossime versioni.")
